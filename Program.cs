@@ -4,29 +4,20 @@ using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Threading;
+using Selection_Algorithm_Test;
 
 namespace CRUSH_Selection_Algorithm_Test
 {
     public class Obj
     {
-        public readonly Guid Id = Guid.NewGuid();
-        private readonly static MD5 md5 = MD5.Create();
-
-        //TODO: Change to CRC32 etc.
-        public byte[] GetPseudoRandom(int m)
-        {
-            var buffer = Id.ToByteArray(); //16 bytes
-
-            var ms = BitConverter.GetBytes(m); //4 bytes
-            for (int i = 0; i < 4; i++)
-                buffer[i] ^= ms[i];
-
-            return md5.ComputeHash(buffer); //16 bytes in 16 bytes out
-        }
+        private static uint idCounter;
+        public readonly uint Id = ++idCounter;
     }
 
     public class Item
     {
+        private static uint idCounter;
+        public readonly uint Id = ++idCounter;
         public readonly HashSet<Obj> Objects = new HashSet<Obj>();
         public int Weight;
         public double w;
@@ -106,25 +97,21 @@ namespace CRUSH_Selection_Algorithm_Test
                 ++iters;
                 Item selectedItem = null;
                 long min = long.MaxValue;
-                for (int index = 0; index < Items.Count; index++)
+                foreach (var item in Items)
                 {
-                    var item = Items[index];
-                    if (item.Weight == 0)
+                    if (item.Weight == 0 || item.disabled)
                         continue;
-                    var k = index + 1;
-                    byte[] rnd1 = obj.GetPseudoRandom(iters * k);
-                    byte[] rnd2 = obj.GetPseudoRandom(2 * iters + rnd1[0] * k);
+                    uint rnd1 = Hash.Calculate(obj.Id, item.Id, (uint)iters);
+                    //int rnd2 = rnd1 * 1664525 + 1013904223;
+                    uint rnd2 = (rnd1 << 4) | (rnd1 >> 28);
+                    uint s = (rnd1 & 0x00ff00ff) + ((rnd1 >> 8) & 0x00ff00ff) +
+                             (rnd2 & 0x00ff00ff) + ((rnd2 >> 8) & 0x00ff00ff);
 
-                    int sum1 = 2;//avarage sbyte is -0.5; move the center to 0
-                    for (int i = 0; i < 4; i++)
-                        sum1 += (sbyte)rnd1[i];
-
-                    int sum2 = 2;
-                    for (int i = 0; i < 4; i++)
-                        sum2 += (sbyte)rnd2[i];
-
-                    long rnd = sum1 * sum1 + sum2 * sum2; //approx exponential
-                    rnd <<= 30;
+                    const int center = byte.MaxValue*4/2;
+                    long sum1 = (s & 0xffff) - center;
+                    long sum2 = (s >> 16) - center;
+                    long rnd = sum1*sum1 + sum2*sum2; //approx exponential
+                    rnd <<= 31;
                     rnd /= item.Weight;
                     if (rnd < min)
                     {
@@ -133,8 +120,7 @@ namespace CRUSH_Selection_Algorithm_Test
                     }
                 }
 
-                if (!selectedItem.disabled)
-                    return selectedItem;
+                return selectedItem;
             }
         }
     }
@@ -143,10 +129,10 @@ namespace CRUSH_Selection_Algorithm_Test
     {
         private static void Test()
         {
-            const int N = 100 * 1000;
+            const int N = 1000 * 1000;
             Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
             var random = new Random();
-            var weights = Enumerable.Range(0, 10).Select(_ => random.Next(1, 3));
+            var weights = Enumerable.Range(0, 10).Select(_ => random.Next(1, 10));
             var bucket = new Bucket(weights);
             var iterationStat = new Dictionary<int, int>();
 
@@ -155,7 +141,7 @@ namespace CRUSH_Selection_Algorithm_Test
 
             Console.WriteLine("======= Rebalance =======");
             var item = bucket.Items.First(_ => _.Weight > 0);
-            item.Weight = item.Weight > 0 ? 0 : 1;
+            item.Weight = 0;
             int expected, moved;
             bucket.Rebalance(out expected, out moved);
             ShowObjectDistribution(bucket);
