@@ -43,27 +43,17 @@ namespace CRUSH_Selection_Algorithm_Test
                 item.w = item.Weight / sumweight;
         }
 
-        public void AddObject(Obj obj, Dictionary<int, int> iterationStat)
+        public void AddObject(Obj obj)
         {
-            int iters;
-            var item = Select(obj, out iters);
-            AddToIterationStat(iterationStat, iters);
+            var item = Select(obj);
             item.Objects.Add(obj);
             ++ObjectCount;
         }
 
-        private void AddToIterationStat(Dictionary<int, int> iterationStat, int iters)
-        {
-            if (iterationStat.ContainsKey(iters))
-                ++iterationStat[iters];
-            else
-                iterationStat[iters] = 1;
-        }
-
-        public void AddObjects(int count, Dictionary<int, int> iterationStat)
+        public void AddObjects(int count)
         {
             for (int i = 0; i < count; i++)
-                AddObject(new Obj(), iterationStat);
+                AddObject(new Obj());
         }
 
         public void Rebalance(out int expected, out int moved)
@@ -76,8 +66,7 @@ namespace CRUSH_Selection_Algorithm_Test
             {
                 foreach (var obj in item.Objects.ToList())
                 {
-                    int iters;
-                    var dest = Select(obj, out iters);
+                    var dest = Select(obj);
                     if (dest != item)
                     {
                         //Move
@@ -89,19 +78,17 @@ namespace CRUSH_Selection_Algorithm_Test
             }
         }
 
-        public Item Select(Obj obj, out int iters)
+        public Item Select(Obj obj, uint r = 0)
         {
-            iters = 0;
             while (true)
             {
-                ++iters;
                 Item selectedItem = null;
                 long min = long.MaxValue;
                 foreach (var item in Items)
                 {
                     if (item.Weight == 0 || item.disabled)
                         continue;
-                    uint rnd1 = Hash.Calculate(obj.Id, item.Id, (uint)iters);
+                    uint rnd1 = Hash.Calculate(obj.Id, item.Id, r);
                     //int rnd2 = rnd1 * 1664525 + 1013904223;
                     uint rnd2 = (rnd1 << 4) | (rnd1 >> 28);
                     uint s = (rnd1 & 0x00ff00ff) + ((rnd1 >> 8) & 0x00ff00ff) +
@@ -132,12 +119,11 @@ namespace CRUSH_Selection_Algorithm_Test
             const int N = 1000 * 1000;
             Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
             var random = new Random();
-            var weights = Enumerable.Range(0, 10).Select(_ => random.Next(1, 10));
+            var weights = Enumerable.Range(0, 10).Select(i => i + 1);
             var bucket = new Bucket(weights);
-            var iterationStat = new Dictionary<int, int>();
 
-            bucket.AddObjects(N, iterationStat);
-            Show(bucket, iterationStat);
+            bucket.AddObjects(N);
+            ShowObjectDistribution(bucket);
 
             Console.WriteLine("======= Rebalance =======");
             var item = bucket.Items.First(_ => _.Weight > 0);
@@ -150,9 +136,8 @@ namespace CRUSH_Selection_Algorithm_Test
             Console.WriteLine("======= Overloaded. Add more objects. =======");
             item = bucket.Items.First(_ => _.Weight > 0);
             item.disabled = true;//when overloaded or failed
-            iterationStat.Clear();
-            bucket.AddObjects(N, iterationStat);//add more items before rebalance
-            Show(bucket, iterationStat);
+            bucket.AddObjects(N);//add more items before rebalance
+            ShowObjectDistribution(bucket);
 
             Console.WriteLine("======= Rebalance =======");
             item.Weight = 0;
@@ -188,13 +173,6 @@ namespace CRUSH_Selection_Algorithm_Test
             }
         }
 
-        private static void Show(Bucket bucket, Dictionary<int, int> iterationStat)
-        {
-            ShowIterationStatistics(iterationStat);
-            ShowObjectDistribution(bucket);
-            Console.WriteLine();
-        }
-
         private static void ShowObjectDistribution(Bucket bucket)
         {
             Console.WriteLine("--- Object Distribution: ---");
@@ -212,14 +190,7 @@ namespace CRUSH_Selection_Algorithm_Test
                 Console.WriteLine("{3}Weight:{0}, w:{1:0.0000}, diff:{2:0.00}%, count:{4}",
                                   item.Weight, item.w, diff, item.disabled ? "*" : " ", item.Objects.Count);
             }
-        }
-
-        private static void ShowIterationStatistics(Dictionary<int, int> iterationStat)
-        {
-            Console.WriteLine("--- Iteration Statistics: ---");
-            Console.WriteLine("Iteration Count: Number of Appearances");
-            foreach (var iters in iterationStat.Keys.OrderBy(_ => _))
-                Console.WriteLine("{0:00}: {1}", iters, iterationStat[iters]);
+            Console.WriteLine();
         }
 
         static void Main()
