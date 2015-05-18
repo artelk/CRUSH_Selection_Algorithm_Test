@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.Eventing.Reader;
 using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
@@ -29,8 +30,9 @@ namespace CRUSH_Selection_Algorithm_Test
         public readonly List<Item> Items;
         public int ObjectCount;
 
-        public Bucket(IEnumerable<int> weights)
+        public Bucket(Func<Bucket, Obj, uint, Item> alg, IEnumerable<int> weights)
         {
+            this.alg = alg;
             Items = weights.Select(w => new Item { Weight = w }).ToList();
             Update();
         }
@@ -45,7 +47,7 @@ namespace CRUSH_Selection_Algorithm_Test
 
         public void AddObject(Obj obj)
         {
-            var item = Select(obj);
+            var item = Choose(obj);
             item.Objects.Add(obj);
             ++ObjectCount;
         }
@@ -66,7 +68,7 @@ namespace CRUSH_Selection_Algorithm_Test
             {
                 foreach (var obj in item.Objects.ToList())
                 {
-                    var dest = Select(obj);
+                    var dest = Choose(obj);
                     if (dest != item)
                     {
                         //Move
@@ -78,49 +80,85 @@ namespace CRUSH_Selection_Algorithm_Test
             }
         }
 
-        public Item Select(Obj obj, uint r = 0)
+        private readonly Func<Bucket, Obj, uint, Item> alg;
+
+        public Item Choose(Obj obj, uint r = 0)
         {
-            while (true)
-            {
-                Item selectedItem = null;
-                long min = long.MaxValue;
-                foreach (var item in Items)
-                {
-                    if (item.Weight == 0 || item.disabled)
-                        continue;
-                    uint rnd1 = Hash.Calculate(obj.Id, item.Id, r);
-                    //int rnd2 = rnd1 * 1664525 + 1013904223;
-                    uint rnd2 = (rnd1 << 4) | (rnd1 >> 28);
-                    uint s = (rnd1 & 0x00ff00ff) + ((rnd1 >> 8) & 0x00ff00ff) +
-                             (rnd2 & 0x00ff00ff) + ((rnd2 >> 8) & 0x00ff00ff);
-
-                    const int center = byte.MaxValue*4/2;
-                    long sum1 = (s & 0xffff) - center;
-                    long sum2 = (s >> 16) - center;
-                    long rnd = sum1*sum1 + sum2*sum2; //approx exponential
-                    rnd <<= 31;
-                    rnd /= item.Weight;
-                    if (rnd < min)
-                    {
-                        min = rnd;
-                        selectedItem = item;
-                    }
-                }
-
-                return selectedItem;
-            }
+            return alg(this, obj, r);
         }
     }
 
     class Program
     {
+        private static Item Choose_Straw2(Bucket bucket, Obj obj, uint r)
+        {
+            Item selectedItem = null;
+            long high_draw = long.MinValue;
+            foreach (var item in bucket.Items)
+            {
+                int w = item.Weight;
+                if (item.Weight == 0 || item.disabled)
+                    continue;
+                uint u = Hash.Calculate(obj.Id, item.Id, r);
+                u &= 0xffff;
+
+                long ln = Ln.Get(u) - 0x1000000000000L;
+
+                long draw = ln/w;
+
+                if (draw > high_draw)
+                {
+                    selectedItem = item;
+                    high_draw = draw;
+                }
+            }
+            return selectedItem;
+        }
+
+        private static Item Choose_Straw2Plus(Bucket bucket, Obj obj, uint r)
+        {
+            Item selectedItem = null;
+            long min = long.MaxValue;
+            foreach (var item in bucket.Items)
+            {
+                if (item.Weight == 0 || item.disabled)
+                    continue;
+
+                uint rnd1 = Hash.Calculate(obj.Id, item.Id, r);
+                uint rnd2 = Hash.Calculate(rnd1 ^ 0xa5a5a5a5);
+
+                uint s = (rnd1 & 0x00ff00ff) + ((rnd1 >> 8) & 0x00ff00ff) +
+                         (rnd2 & 0x00ff00ff) + ((rnd2 >> 8) & 0x00ff00ff);
+
+                const int center = 4*byte.MaxValue/2;
+                int sum1 = (int)(s & 0xffff) - center;
+                int sum2 = (int)(s >> 16) - center;
+                long rnd = sum1 * sum1 + sum2 * sum2; //approx exponential
+                rnd <<= 42;
+                rnd /= item.Weight;
+                if (rnd < min)
+                {
+                    min = rnd;
+                    selectedItem = item;
+                }
+            }
+
+            return selectedItem;
+        }
+
         private static void Test()
         {
             const int N = 1000 * 1000;
+            Func<Bucket, Obj, uint, Item> alg;
+            if (true)
+                alg = Choose_Straw2Plus;
+            else
+                alg = Choose_Straw2;
+
             Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
             var random = new Random();
-            var weights = Enumerable.Range(0, 10).Select(i => i + 1);
-            var bucket = new Bucket(weights);
+            var weights = Enumerable.Range(1, 10).Select(i => i);
+            var bucket = new Bucket(alg, weights);
 
             bucket.AddObjects(N);
             ShowObjectDistribution(bucket);
@@ -165,10 +203,11 @@ namespace CRUSH_Selection_Algorithm_Test
             Console.WriteLine("Expected: {0}, Moved: {1}\n", expected, moved);
 
             Console.WriteLine("======= Add more items (one by one) and rebalance =======");
-            for (int i = 0; i < 10; i++)
+            for (int i = 0; i < 20; i++)
             {
                 bucket.Items.Add(new Item { Weight = 1 });
                 bucket.Rebalance(out expected, out moved);
+                ShowObjectDistribution(bucket);
                 Console.WriteLine("Expected: {0}, Moved: {1}\n", expected, moved);
             }
         }
